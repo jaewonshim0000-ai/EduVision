@@ -1,5 +1,8 @@
 // @ts-nocheck
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 // ─────────────────────────────────────────────────────────────
 // EduVision — AI-Powered Educational Question Generator
@@ -24,6 +27,44 @@ const TABS = [
   { id: "create", label: "Create", icon: "✦" },
   { id: "explore", label: "Explore Nearby", icon: "◎" },
 ];
+
+// ─── Custom map marker SVG builder ───
+function createSubjectIcon(color, icon) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="46" viewBox="0 0 36 46">
+    <path d="M18 0C8.06 0 0 8.06 0 18c0 13.5 18 28 18 28s18-14.5 18-28C36 8.06 27.94 0 18 0z" fill="${color}" stroke="#fff" stroke-width="2"/>
+    <circle cx="18" cy="16" r="10" fill="#fff" opacity="0.9"/>
+    <text x="18" y="20" text-anchor="middle" font-size="12" font-weight="bold" fill="${color}" font-family="sans-serif">${icon}</text>
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: "",
+    iconSize: [36, 46],
+    iconAnchor: [18, 46],
+    popupAnchor: [0, -40],
+  });
+}
+
+function createUserIcon() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="10" fill="#3A6BE8" stroke="#fff" stroke-width="3"/>
+    <circle cx="12" cy="12" r="4" fill="#fff"/>
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: "",
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+  });
+}
+
+// ─── Component to recenter map when location changes ───
+function RecenterMap({ lat, lng, zoom }) {
+  const map = useMap();
+  useEffect(() => {
+    if (lat && lng) map.setView([lat, lng], zoom || map.getZoom());
+  }, [lat, lng, zoom]);
+  return null;
+}
 
 // ─── Haversine distance (meters) between two lat/lng points ───
 function haversineDistance(lat1, lon1, lat2, lon2) {
@@ -110,7 +151,7 @@ async function generateQuestionAPI(base64Image, mediaType, subject, difficulty) 
   return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
 
-// ─── File → base64 ───
+// ─── File to base64 ───
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -136,7 +177,7 @@ function compressImage(file, maxDim = 300, quality = 0.6) {
   });
 }
 
-// ─── localStorage-based storage helpers (replaces window.storage) ───
+// ─── localStorage-based storage helpers ───
 async function publishQuestion(questionData) {
   const id = `geoq:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   let index = [];
@@ -175,6 +216,14 @@ async function loadNearbyQuestions(userLat, userLng, radiusMeters = 50000) {
   return results;
 }
 
+// ─── Radius to zoom level mapping ───
+function radiusToZoom(radius) {
+  if (radius <= 1000) return 15;
+  if (radius <= 5000) return 13;
+  if (radius <= 25000) return 11;
+  return 9;
+}
+
 // ══════════════════════════════════════════════════════════════
 // Main App
 // ══════════════════════════════════════════════════════════════
@@ -202,6 +251,15 @@ export default function EduVision() {
   const [searchRadius, setSearchRadius] = useState(5000);
   const [expandedPin, setExpandedPin] = useState(null);
   const [showAnswer, setShowAnswer] = useState({});
+  const [mapView, setMapView] = useState("split");
+
+  // Memoize icons
+  const userIcon = useMemo(() => createUserIcon(), []);
+  const subjectIcons = useMemo(() => {
+    const icons = {};
+    SUBJECTS.forEach((s) => { icons[s.id] = createSubjectIcon(s.color, s.icon); });
+    return icons;
+  }, []);
 
   // ── Request GPS ──
   const requestLocation = useCallback(() => {
@@ -298,6 +356,67 @@ export default function EduVision() {
 
   const selectedSubject = SUBJECTS.find((s) => s.id === subject);
   const canGenerate = image && subject && !loading;
+
+  // ── Map component ──
+  const renderMap = (height = 360) => {
+    if (!userLocation) return null;
+    return (
+      <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid #E8EAED", height }}>
+        <MapContainer
+          center={[userLocation.lat, userLocation.lng]}
+          zoom={radiusToZoom(searchRadius)}
+          style={{ width: "100%", height: "100%" }}
+          zoomControl={true}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          <RecenterMap lat={userLocation.lat} lng={userLocation.lng} zoom={radiusToZoom(searchRadius)} />
+          <Circle
+            center={[userLocation.lat, userLocation.lng]}
+            radius={searchRadius}
+            pathOptions={{ color: "#3A6BE8", fillColor: "#3A6BE8", fillOpacity: 0.05, weight: 1.5, dashArray: "6 4" }}
+          />
+          <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon}>
+            <Popup>
+              <div style={{ fontFamily: "'DM Sans', sans-serif", textAlign: "center", padding: "4px 0" }}>
+                <strong style={{ fontSize: 13 }}>You are here</strong>
+              </div>
+            </Popup>
+          </Marker>
+          {nearbyQuestions.map((q, i) => {
+            const subj = SUBJECTS.find((s) => s.id === q.subject);
+            return (
+              <Marker key={q.id || i} position={[q.lat, q.lng]} icon={subjectIcons[q.subject] || subjectIcons["science"]}
+                eventHandlers={{ click: () => setExpandedPin(i) }}>
+                <Popup maxWidth={280}>
+                  <div style={{ fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <span style={{ background: subj?.bg, color: subj?.color, fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4 }}>
+                        {subj?.icon} {subj?.label}
+                      </span>
+                      <span style={{ fontSize: 11, color: "#667085" }}>{formatDistance(q.distance)}</span>
+                    </div>
+                    {q.thumbnail && (
+                      <img src={`data:image/jpeg;base64,${q.thumbnail}`} alt=""
+                        style={{ width: "100%", height: 100, objectFit: "cover", borderRadius: 6, marginBottom: 6 }} />
+                    )}
+                    <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 4px", lineHeight: 1.4, color: "#1A1A2E" }}>
+                      {q.question}
+                    </p>
+                    <p style={{ fontSize: 11, color: "#98A2B3", margin: 0 }}>
+                      {timeAgo(q.timestamp)} · {DIFFICULTY_LEVELS.find((d) => d.id === q.difficulty)?.label || q.difficulty}
+                    </p>
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
+        </MapContainer>
+      </div>
+    );
+  };
 
   return (
     <div style={S.root}>
@@ -443,7 +562,6 @@ export default function EduVision() {
                 {/* ── Action Row with Publish ── */}
                 <div style={S.actionRow}>
                   <button onClick={handleGenerate} disabled={loading} style={S.secBtn}>↻ Regenerate</button>
-
                   {!published ? (
                     <button onClick={handlePublish} disabled={publishing}
                       style={{ ...S.pubBtn, opacity: publishing ? 0.6 : 1 }}>
@@ -460,6 +578,23 @@ export default function EduVision() {
                     </div>
                   )}
                 </div>
+
+                {/* ── Mini map after publishing ── */}
+                {published && userLocation && (
+                  <div style={{ marginTop: 4 }}>
+                    <p style={{ ...S.metaLabel, marginBottom: 8 }}>📍 Pinned Location</p>
+                    <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid #E8EAED", height: 180 }}>
+                      <MapContainer center={[userLocation.lat, userLocation.lng]} zoom={15}
+                        style={{ width: "100%", height: "100%" }} zoomControl={false} dragging={false}
+                        scrollWheelZoom={false} doubleClickZoom={false} touchZoom={false}>
+                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                        <Marker position={[userLocation.lat, userLocation.lng]}
+                          icon={subjectIcons[subject] || subjectIcons["science"]} />
+                      </MapContainer>
+                    </div>
+                  </div>
+                )}
+
                 {geoError && <p style={{ fontSize: 12, color: "#B42318", margin: "4px 0 0" }}>{geoError}</p>}
               </div>
             )}
@@ -472,14 +607,28 @@ export default function EduVision() {
         <div style={S.exploreWrap}>
           <div style={S.exploreHead}>
             <h2 style={{ fontFamily: "'DM Serif Display', serif", fontSize: 20, margin: 0 }}>Nearby Questions</h2>
-            <div style={S.radiusRow}>
-              {[1000, 5000, 25000, 50000].map((r) => (
-                <button key={r} onClick={() => { setSearchRadius(r); loadExplore(r); }}
-                  style={{ ...S.radBtn, background: searchRadius === r ? "#1A1A2E" : "#F4F5F7", color: searchRadius === r ? "#fff" : "#344054" }}>
-                  {r < 1000 ? `${r}m` : `${r / 1000}km`}
-                </button>
-              ))}
-              <button onClick={() => loadExplore(searchRadius)} style={S.refBtn} title="Refresh">↻</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={S.viewToggle}>
+                {[
+                  { id: "split", label: "◫" },
+                  { id: "map", label: "▣" },
+                  { id: "list", label: "☰" },
+                ].map((v) => (
+                  <button key={v.id} onClick={() => setMapView(v.id)}
+                    style={{ ...S.viewBtn, background: mapView === v.id ? "#1A1A2E" : "transparent", color: mapView === v.id ? "#fff" : "#667085" }}>
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+              <div style={S.radiusRow}>
+                {[1000, 5000, 25000, 50000].map((r) => (
+                  <button key={r} onClick={() => { setSearchRadius(r); loadExplore(r); }}
+                    style={{ ...S.radBtn, background: searchRadius === r ? "#1A1A2E" : "#F4F5F7", color: searchRadius === r ? "#fff" : "#344054" }}>
+                    {r < 1000 ? `${r}m` : `${r / 1000}km`}
+                  </button>
+                ))}
+                <button onClick={() => loadExplore(searchRadius)} style={S.refBtn} title="Refresh">↻</button>
+              </div>
             </div>
           </div>
 
@@ -490,7 +639,7 @@ export default function EduVision() {
               <div style={S.pulse} />
               <p style={{ fontWeight: 600, fontSize: 14, color: "#344054", margin: 0 }}>Scanning nearby…</p>
             </div>
-          ) : nearbyQuestions.length === 0 ? (
+          ) : nearbyQuestions.length === 0 && !userLocation ? (
             <div style={S.emptyExplore}>
               <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style={{ marginBottom: 12 }}>
                 <circle cx="28" cy="28" r="24" stroke="#D0D5DD" strokeWidth="1.5" strokeDasharray="4 4" fill="none" />
@@ -501,51 +650,75 @@ export default function EduVision() {
               <p style={S.emptyText}>Be the first! Create a question and pin it to your location.</p>
             </div>
           ) : (
-            <div style={S.pinList}>
-              {nearbyQuestions.map((q, i) => {
-                const subj = SUBJECTS.find((s) => s.id === q.subject);
-                const open = expandedPin === i;
-                return (
-                  <div key={q.id || i} style={{ ...S.pinCard, ...(open ? { borderColor: subj?.color || "#3A6BE8" } : {}) }}
-                    onClick={() => setExpandedPin(open ? null : i)}>
-                    <div style={S.pinHead}>
-                      {q.thumbnail && <img src={`data:image/jpeg;base64,${q.thumbnail}`} alt="" style={S.pinThumb} />}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={S.pinMeta}>
-                          <span style={{ ...S.pinTag, background: subj?.bg, color: subj?.color }}>{subj?.icon} {subj?.label}</span>
-                          <span style={S.pinDist}>{formatDistance(q.distance)}</span>
+            <div>
+              {/* ── Map View ── */}
+              {(mapView === "split" || mapView === "map") && userLocation && (
+                <div style={{ marginBottom: mapView === "map" ? 0 : 16 }}>
+                  {renderMap(mapView === "map" ? 520 : 320)}
+                  {nearbyQuestions.length > 0 && (
+                    <p style={{ fontSize: 12, color: "#98A2B3", margin: "8px 0 0", textAlign: "center" }}>
+                      {nearbyQuestions.length} question{nearbyQuestions.length !== 1 ? "s" : ""} within {searchRadius < 1000 ? `${searchRadius}m` : `${searchRadius / 1000}km`}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {nearbyQuestions.length === 0 && userLocation && mapView !== "map" && (
+                <div style={{ ...S.emptyExplore, marginTop: 0 }}>
+                  <h3 style={S.emptyTitle}>No questions nearby yet</h3>
+                  <p style={S.emptyText}>Be the first! Create a question and pin it to your location.</p>
+                </div>
+              )}
+
+              {/* ── List View ── */}
+              {(mapView === "split" || mapView === "list") && nearbyQuestions.length > 0 && (
+                <div style={S.pinList}>
+                  {nearbyQuestions.map((q, i) => {
+                    const subj = SUBJECTS.find((s) => s.id === q.subject);
+                    const open = expandedPin === i;
+                    return (
+                      <div key={q.id || i} style={{ ...S.pinCard, ...(open ? { borderColor: subj?.color || "#3A6BE8" } : {}) }}
+                        onClick={() => setExpandedPin(open ? null : i)}>
+                        <div style={S.pinHead}>
+                          {q.thumbnail && <img src={`data:image/jpeg;base64,${q.thumbnail}`} alt="" style={S.pinThumb} />}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={S.pinMeta}>
+                              <span style={{ ...S.pinTag, background: subj?.bg, color: subj?.color }}>{subj?.icon} {subj?.label}</span>
+                              <span style={S.pinDist}>{formatDistance(q.distance)}</span>
+                            </div>
+                            <p style={S.pinQ}>{q.question}</p>
+                            <p style={{ fontSize: 11, color: "#98A2B3", margin: "4px 0 0" }}>
+                              {timeAgo(q.timestamp)} · {DIFFICULTY_LEVELS.find((d) => d.id === q.difficulty)?.label || q.difficulty}
+                            </p>
+                          </div>
+                          <span style={{ fontSize: 18, color: "#98A2B3", transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
                         </div>
-                        <p style={S.pinQ}>{q.question}</p>
-                        <p style={{ fontSize: 11, color: "#98A2B3", margin: "4px 0 0" }}>
-                          {timeAgo(q.timestamp)} · {DIFFICULTY_LEVELS.find((d) => d.id === q.difficulty)?.label || q.difficulty}
-                        </p>
-                      </div>
-                      <span style={{ fontSize: 18, color: "#98A2B3", transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
-                    </div>
-                    {open && (
-                      <div style={S.pinExpand} onClick={(e) => e.stopPropagation()}>
-                        <div style={S.analysisBanner}>
-                          <div style={S.dot} />
-                          <div><p style={S.metaLabel}>What's in the image</p><p style={S.aText}>{q.image_analysis}</p></div>
-                        </div>
-                        <details style={S.hintBox}>
-                          <summary style={S.hintSum}>💡 Need a hint?</summary>
-                          <p style={S.hintP}>{q.hint}</p>
-                        </details>
-                        <button onClick={(e) => { e.stopPropagation(); setShowAnswer((p) => ({ ...p, [i]: !p[i] })); }} style={S.secBtn}>
-                          {showAnswer[i] ? "Hide" : "Show"} Learning Objective
-                        </button>
-                        {showAnswer[i] && (
-                          <div style={{ ...S.metaItem, marginTop: 8 }}>
-                            <p style={S.metaLabel}>Learning Objective</p>
-                            <p style={S.metaVal}>{q.learning_objective}</p>
+                        {open && (
+                          <div style={S.pinExpand} onClick={(e) => e.stopPropagation()}>
+                            <div style={S.analysisBanner}>
+                              <div style={S.dot} />
+                              <div><p style={S.metaLabel}>What's in the image</p><p style={S.aText}>{q.image_analysis}</p></div>
+                            </div>
+                            <details style={S.hintBox}>
+                              <summary style={S.hintSum}>💡 Need a hint?</summary>
+                              <p style={S.hintP}>{q.hint}</p>
+                            </details>
+                            <button onClick={(e) => { e.stopPropagation(); setShowAnswer((p) => ({ ...p, [i]: !p[i] })); }} style={S.secBtn}>
+                              {showAnswer[i] ? "Hide" : "Show"} Learning Objective
+                            </button>
+                            {showAnswer[i] && (
+                              <div style={{ ...S.metaItem, marginTop: 8 }}>
+                                <p style={S.metaLabel}>Learning Objective</p>
+                                <p style={S.metaVal}>{q.learning_objective}</p>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -557,6 +730,9 @@ export default function EduVision() {
         @keyframes pulse{0%,100%{transform:scale(1);opacity:.6}50%{transform:scale(1.2);opacity:1}}
         details>summary{list-style:none;cursor:pointer}
         details>summary::-webkit-details-marker{display:none}
+        .leaflet-popup-content-wrapper{border-radius:10px!important;box-shadow:0 4px 16px rgba(0,0,0,0.12)!important}
+        .leaflet-popup-content{margin:10px 12px!important}
+        .leaflet-container{font-family:'DM Sans',sans-serif!important}
       `}</style>
     </div>
   );
@@ -615,11 +791,13 @@ const S = {
   secBtn: { padding: "9px 16px", borderRadius: 8, border: "1px solid #D0D5DD", background: "#fff", color: "#344054", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif", cursor: "pointer" },
   pubBtn: { display: "flex", alignItems: "center", padding: "9px 16px", borderRadius: 8, border: "none", background: "#1A1A2E", color: "#fff", fontSize: 13, fontWeight: 600, fontFamily: "'DM Sans', sans-serif", cursor: "pointer", transition: "all 0.15s" },
   pubDone: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#344054", background: "#ECFDF3", padding: "8px 14px", borderRadius: 8 },
-  exploreWrap: { maxWidth: 720, margin: "24px auto", padding: "0 24px" },
+  exploreWrap: { maxWidth: 820, margin: "24px auto", padding: "0 24px" },
   exploreHead: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 18 },
   radiusRow: { display: "flex", gap: 6, alignItems: "center" },
   radBtn: { padding: "6px 12px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, fontFamily: "'DM Sans', sans-serif", cursor: "pointer", transition: "all 0.15s" },
   refBtn: { width: 32, height: 32, borderRadius: 6, border: "1px solid #D0D5DD", background: "#fff", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  viewToggle: { display: "flex", background: "#F4F5F7", borderRadius: 6, padding: 2 },
+  viewBtn: { width: 32, height: 28, border: "none", borderRadius: 4, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s", fontFamily: "'DM Sans', sans-serif" },
   emptyExplore: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 48, background: "#fff", borderRadius: 12, border: "1px solid #E8EAED" },
   pinList: { display: "flex", flexDirection: "column", gap: 10 },
   pinCard: { background: "#fff", borderRadius: 12, border: "1px solid #E8EAED", padding: 16, cursor: "pointer", transition: "all 0.15s" },
