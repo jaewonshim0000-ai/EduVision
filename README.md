@@ -153,6 +153,10 @@ service cloud.firestore {
 | `ANTHROPIC_API_KEY` | Vercel dashboard | Your Anthropic API key (server-side only) |
 | Firebase config | `src/firebase.ts` | Firebase project credentials (client-side, committed) |
 
+## Try It Out!!
+
+https://learn-gamma-two.vercel.app/
+
 ## License
 
 MIT
